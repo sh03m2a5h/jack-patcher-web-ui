@@ -1,0 +1,5 @@
+{
+    "yaml.schemas": {
+        "openapi:v3": "file:///e%3A/Develop/raspi_audio_router/jack_web_api.yaml"
+    }
+}

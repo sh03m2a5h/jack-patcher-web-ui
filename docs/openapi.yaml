@@ -1,0 +1,319 @@
+openapi: 3.0.0
+info:
+  title: JACK Web API
+  description: JACK Audio Connection Kit Web API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com/v1/jack
+    description: Production server
+paths:
+  /control/server:
+    get:
+      summary: Get JACK server status
+      responses:
+        "200":
+          description: JACK server status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: running
+                    enum:
+                      - running
+                      - stopped
+        "400":
+          description: JACK server not running
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    post:
+      summary: Start JACK
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/JackServerCongig"
+      responses:
+        "200":
+          description: JACK started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Sccess"
+        "400":
+          description: JACK already started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      summary: Stop JACK
+      responses:
+        "200":
+          description: JACK stopped
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Sccess"
+        "400":
+          description: JACK already stopped
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /alsa/devices:
+    get:
+      summary: Get ALSA devices
+      responses:
+        "200":
+          description: ALSA devices
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    deviceName:
+                      type: string
+                      example: hw:0
+                    playback:
+                      type: object
+                      properties:
+                        format:
+                          type: string
+                          enum: [s16_le, s24_3le, s32_le]
+                        rate:
+                          type: array
+                          items:
+                            type: integer
+                            example: [44100, 48000, 96000]
+                        channels:
+                          type: integer
+                          example: 2
+                    capture:
+                      type: object
+                      properties:
+                        format:
+                          type: string
+                          enum: [s16_le, s24_3le, s32_le]
+                        rate:
+                          type: array
+                          items:
+                            type: integer
+                            example: [44100, 48000, 96000]
+                        channels:
+                          type: integer
+                          example: 2
+        "400":
+          description: JACK server not running
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /device/alsa/{device_name}:
+    post:
+      summary: Load ALSA device with configuration
+      parameters:
+        - name: device_name
+          in: path
+          required: true
+          description: ALSA device name
+          schema:
+            type: string
+          example: hw:0
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                client:
+                  type: string
+                  example: alsa | zalsa
+                properties:
+                  type: object
+                  properties:
+                    rate:
+                      type: integer
+                      example: 96000
+                    capture_channels:
+                      type: integer
+                      example: 2
+                    playback_channels:
+                      type: integer
+                      example: 2
+                    format:
+                      type: string
+                      enum: [s16_le, s24_3le, s32_le]
+                    period:
+                      type: integer
+                      example: 128
+                    nperiods:
+                      type: integer
+                      example: 4
+      responses:
+        "200":
+          description: ALSA device configuration loaded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Sccess"
+        "400":
+          description: ALSA device already loaded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      summary: Unload ALSA device configuration
+      parameters:
+        - name: device_name
+          in: path
+          required: true
+          description: ALSA device name
+          schema:
+            type: string
+          example: hw:0
+      responses:
+        "200":
+          description: ALSA device configuration unloaded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Sccess"
+        "400":
+          description: ALSA device already unloaded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /ports:
+    get:
+      summary: Get JACK server ports
+      responses:
+        "200":
+          description: JACK server ports
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ports:
+                    type: array
+                    items:
+                      type: string
+                    example: [system:capture_1, system:playback_1]
+        "400":
+          description: JACK server not running
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /patches:
+    get:
+      summary: Get connected JACK server ports
+      responses:
+        "200":
+          description: Connected JACK server ports
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ports:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/JackPatch"
+        "400":
+          description: JACK server not running
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    post:
+      summary: Disconnect JACK server ports
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/JackPatch"
+      responses:
+        "200":
+          description: Ports disconnected
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Sccess"
+        "400":
+          description: Ports already disconnected
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      summary: Connect JACK server ports
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/JackPatch"
+      responses:
+        "200":
+          description: Ports connected
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Sccess"
+        "400":
+          description: Ports already connected
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+components:
+  schemas:
+    JackServerCongig:
+      type: object
+      properties:
+        device:
+          type: string
+          example: hw:0
+        rate:
+          type: integer
+          example: 96000
+        period:
+          type: integer
+          example: 128
+        nperiods:
+          type: integer
+          example: 4
+    JackPatch:
+      type: object
+      properties:
+        source:
+          type: string
+          example: system:capture_1
+        destination:
+          type: string
+          example: system:playback_1
+    Sccess:
+      type: object
+      properties:
+        message:
+          type: string
+          example: Success
+    Error:
+      type: object
+      properties:
+        message:
+          type: string
+          example: Error message
