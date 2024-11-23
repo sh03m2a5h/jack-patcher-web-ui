@@ -41,7 +41,7 @@ ALSAのデバイスを取得する。
 
 ```shell
 aplay -l
-cat /proc/asound/card{N}/steam{M}
+cat /proc/asound/card{N}/stream{M}
 ```
 
 ## /device/alsa{device_name}
