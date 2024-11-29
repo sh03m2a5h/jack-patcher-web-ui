@@ -2,7 +2,10 @@ module sh1pc.dev/jack-patcher-api
 
 go 1.20
 
-require github.com/gofiber/fiber/v2 v2.52.5
+require (
+	github.com/gofiber/fiber/v2 v2.52.5
+	github.com/mattn/go-sqlite3 v1.14.24
+)
 
 require (
 	github.com/andybalholm/brotli v1.0.5 // indirect

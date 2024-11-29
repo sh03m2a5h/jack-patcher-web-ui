@@ -1,0 +1,39 @@
+@endpoint = http://localhost:3000/api
+
+GET {{endpoint}}/jack/control/server
+
+###
+
+POST {{endpoint}}/jack/control/server
+Content-Type: application/json
+
+{
+  "rate": 96000,
+  "period": 128
+}
+
+###
+
+DELETE {{endpoint}}/jack/control/server
+
+###
+
+GET {{endpoint}}/alsa/devices
+
+###
+
+POST {{endpoint}}/alsa/load
+Content-Type: application/json
+
+{
+    "deviceId": "26fcc14bc2ca9f89",
+    "client": "zalsa",
+    "rate": 96000,
+    "period": 128,
+    "nperiods": 2
+}
+
+###
+
+DELETE {{endpoint}}/alsa/load/26fcc14bc2ca9f89
+

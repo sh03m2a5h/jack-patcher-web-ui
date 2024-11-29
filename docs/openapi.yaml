@@ -37,14 +37,14 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/JackServerCongig"
+              $ref: "#/components/schemas/JackServerConfig"
       responses:
         "200":
           description: JACK started
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Sccess"
+                $ref: "#/components/schemas/Success"
         "400":
           description: JACK already started
           content:
@@ -59,7 +59,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Sccess"
+                $ref: "#/components/schemas/Success"
         "400":
           description: JACK already stopped
           content:
@@ -164,7 +164,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Sccess"
+                $ref: "#/components/schemas/Success"
         "400":
           description: ALSA device already loaded
           content:
@@ -187,7 +187,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Sccess"
+                $ref: "#/components/schemas/Success"
         "400":
           description: ALSA device already unloaded
           content:
@@ -251,7 +251,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Sccess"
+                $ref: "#/components/schemas/Success"
         "400":
           description: Ports already disconnected
           content:
@@ -272,7 +272,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Sccess"
+                $ref: "#/components/schemas/Success"
         "400":
           description: Ports already connected
           content:
@@ -281,7 +281,7 @@ paths:
                 $ref: "#/components/schemas/Error"
 components:
   schemas:
-    JackServerCongig:
+    JackServerConfig:
       type: object
       properties:
         device:
@@ -305,7 +305,7 @@ components:
         destination:
           type: string
           example: system:playback_1
-    Sccess:
+    Success:
       type: object
       properties:
         message:

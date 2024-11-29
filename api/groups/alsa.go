@@ -1,7 +1,10 @@
 package groups
 
 import (
+	"crypto/sha256"
+	"database/sql"
 	"errors"
+	"fmt"
 	"log"
 	"os/exec"
 	"regexp"
@@ -9,43 +12,189 @@ import (
 	"strings"
 
 	"github.com/gofiber/fiber/v2"
+
+	_ "github.com/mattn/go-sqlite3"
 )
 
+type AlsaDevice struct {
+	Id         string
+	CardName   string
+	DeviceName string
+	CardNum    int
+	DeviceNum  int
+}
+
 type AlsaDeviceIfInfo struct {
-	Bits     []string `json:"bits"`
-	Rate     int      `json:"rate"`
-	Channels int      `json:"channels"`
+	BitFormats  []string // e.g. ["S16_LE", "S32_LE"]
+	MinRate     int
+	MaxRate     int
+	MaxChannels int
+	MinPeriod   int
+	MaxPeriod   int
+}
+
+type DevicePadInfo struct {
+	Rate     int `json:"rate"`
+	Channels int `json:"channels"`
 }
 
 type AlsaDeviceInfo struct {
-	DeviceName string           `json:"device_name"`
-	Playback   AlsaDeviceIfInfo `json:"playback"`
-	Capture    AlsaDeviceIfInfo `json:"capture"`
+	Id         string         `json:"id"`
+	CardName   string         `json:"card_name"`
+	DeviceName string         `json:"device_name"`
+	Playback   *DevicePadInfo `json:"playback"`
+	Capture    *DevicePadInfo `json:"capture"`
 }
 
-func getAlsaDeviceSubDeviceCounts() map[string]int {
-	output, err := exec.Command("aplay", "-l").CombinedOutput()
+type AlsaDeviceConnectionType string
+
+const (
+	zAlsa AlsaDeviceConnectionType = "zalsa"
+	alsa  AlsaDeviceConnectionType = "alsa"
+)
+
+type AlsaLoadConfig struct {
+	DeviceId string                   `json:"deviceId"`
+	Client   AlsaDeviceConnectionType `json:"client"`
+	Rate     int                      `json:"rate"`
+	// CaptureChannels  int    `json:"capture_channels"`
+	// PlaybackChannels int    `json:"playback_channels"`
+	// Format           string `json:"format"`
+	Period   int `json:"period"`
+	NPeriods int `json:"nperiods"`
+}
+
+func openDb() (*sql.DB, error) {
+	return sql.Open("sqlite3", "./audio_devices.db")
+}
+
+func Initialize() {
+	log.Println("Initializing alsa devices")
+	defer log.Println("Finished initializing alsa devices")
+
+	// SQLite3 データベースを開く
+	db, err := openDb()
 	if err != nil {
-		log.Println(err)
-		return nil
+		log.Fatal(err)
+	}
+	defer db.Close()
+
+	// テーブルが存在しない場合は作成
+	createTableSQL := `
+	CREATE TABLE IF NOT EXISTS devices (
+		id TEXT,
+		card_name TEXT,
+		device_name TEXT,
+		card_number INT,
+		device_number INT,
+		PRIMARY KEY (id)
+	);
+	CREATE TABLE IF NOT EXISTS device_c_params (
+		device_id TEXT,
+		min_bits INT,
+		max_bits INT,
+		min_rate INT,
+		max_rate INT,
+		max_channels INT,
+		min_period INT,
+		max_period INT,
+		PRIMARY KEY (device_id)
+		FOREIGN KEY (device_id) REFERENCES devices(id)
+	);
+	CREATE TABLE IF NOT EXISTS device_p_params (
+		device_id TEXT,
+		min_bits INT,
+		max_bits INT,
+		min_rate INT,
+		max_rate INT,
+		max_channels INT,
+		min_period INT,
+		max_period INT,
+		PRIMARY KEY (device_id)
+		FOREIGN KEY (device_id) REFERENCES devices(id)
+	);
+	`
+	_, err = db.Exec(createTableSQL)
+	if err != nil {
+		log.Fatal(err)
 	}
 
-	re := regexp.MustCompile(`card (\d+):`)
-	matches := re.FindAllStringSubmatch(string(output), -1)
+	// aplay -l コマンドでデバイス一覧を取得
+	cmd := exec.Command("aplay", "-l")
+	output, err := cmd.Output()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	cardDeviceRegex := regexp.MustCompile(`card (\d+): (.+), device (\d+): (.+)`)
+	matches := cardDeviceRegex.FindAllStringSubmatch(string(output), -1)
 	if matches == nil {
-		return nil
+		log.Fatal("failed to parse aplay output")
 	}
 
-	deviceSubDeviceCounts := make(map[string]int)
+	// カード名とデバイス名の対応をデータベースに保存
 	for _, match := range matches {
-		deviceSubDeviceCounts[match[1]] = 0
-	}
+		cardIndex, _ := strconv.Atoi(match[1])
+		cardName := match[2]
+		deviceIndex, _ := strconv.Atoi(match[3])
+		deviceName := match[4]
+		hash := fmt.Sprintf("%x", sha256.Sum256([]byte(cardName+deviceName)))[0:16]
 
-	return deviceSubDeviceCounts
+		alsaDevice := AlsaDevice{
+			Id:         hash,
+			CardName:   cardName,
+			DeviceName: deviceName,
+			CardNum:    cardIndex,
+			DeviceNum:  deviceIndex,
+		}
+
+		_, err = db.Exec(`INSERT INTO devices (id, card_name, device_name, card_number, device_number) 
+			VALUES (?, ?, ?, ?, ?) 
+			ON CONFLICT(id) 
+			DO UPDATE SET card_name=excluded.card_name, device_name=excluded.device_name, card_number=excluded.card_number, device_number=excluded.device_number`,
+			alsaDevice.Id, alsaDevice.CardName, alsaDevice.DeviceName, alsaDevice.CardNum, alsaDevice.DeviceNum)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		hwId := fmt.Sprintf("hw:%d,%d", cardIndex, deviceIndex)
+		playbackParams, err := getDeviceParams(exec.Command("timeout", "0.5", "aplay", "--dump-hw-params", "-D", hwId, "/dev/zero"))
+		if err != nil {
+			log.Println(err)
+			continue
+		}
+
+		_, err = db.Exec(`INSERT INTO device_p_params (device_id, min_bits, max_bits, min_rate, max_rate, max_channels, min_period, max_period)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(device_id)
+			DO UPDATE SET min_bits=excluded.min_bits, max_bits=excluded.max_bits, min_rate=excluded.min_rate, max_rate=excluded.max_rate, max_channels=excluded.max_channels, min_period=excluded.min_period, max_period=excluded.max_period`,
+			alsaDevice.Id, 16, 32, playbackParams.MinRate, playbackParams.MaxRate, playbackParams.MaxChannels, playbackParams.MinPeriod, playbackParams.MaxPeriod)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		captureParams, err := getDeviceParams(exec.Command("timeout", "0.5", "arecord", "--dump-hw-params", "-D", hwId, "/dev/null"))
+		if err != nil {
+			log.Println(err)
+			continue
+		}
+
+		_, err = db.Exec(`INSERT INTO device_c_params (device_id, min_bits, max_bits, min_rate, max_rate, max_channels, min_period, max_period) 
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(device_id)
+			DO UPDATE SET min_bits=excluded.min_bits, max_bits=excluded.max_bits, min_rate=excluded.min_rate, max_rate=excluded.max_rate, max_channels=excluded.max_channels, min_period=excluded.min_period, max_period=excluded.max_period`,
+			alsaDevice.Id, 16, 32, captureParams.MinRate, captureParams.MaxRate, captureParams.MaxChannels, captureParams.MinPeriod, captureParams.MaxPeriod)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
 }
 
-func parseAlsaInfos(output string) (AlsaDeviceIfInfo, error) {
+func getDeviceParams(cmd *exec.Cmd) (AlsaDeviceIfInfo, error) {
 	ifInfo := AlsaDeviceIfInfo{}
+
+	// cmd := exec.Command("timeout", "0.5", "aplay", "--dump-hw-params", "-D", deviceIdentifier, "/dev/zero")
+	output, _ := cmd.CombinedOutput()
 
 	// -------------------- に囲まれた部分を取得
 	re := regexp.MustCompile(`(?s)--------------------\n(.*?)\n--------------------`)
@@ -69,13 +218,24 @@ func parseAlsaInfos(output string) (AlsaDeviceIfInfo, error) {
 			value := strings.TrimSpace(kv[1])
 			switch key {
 			case "FORMAT":
-				ifInfo.Bits = strings.Split(value, " ")
+				ifInfo.BitFormats = strings.Split(value, " ")
 			case "CHANNELS":
 				value = allBracketsRe.ReplaceAllString(value, "")
-				ifInfo.Channels, _ = strconv.Atoi(lastDigitRe.FindString(value))
+				ifInfo.MaxChannels, _ = strconv.Atoi(lastDigitRe.FindString(value))
 			case "RATE":
 				value = allBracketsRe.ReplaceAllString(value, "")
-				ifInfo.Rate, _ = strconv.Atoi(lastDigitRe.FindString(value))
+				splitted := strings.Split(value, " ")
+				ifInfo.MinRate, _ = strconv.Atoi(splitted[0])
+				if len(splitted) > 1 {
+					ifInfo.MaxRate, _ = strconv.Atoi(splitted[1])
+				} else {
+					ifInfo.MaxRate = ifInfo.MinRate
+				}
+			case "PERIOD":
+				value = allBracketsRe.ReplaceAllString(value, "")
+				splitted := strings.Split(value, " ")
+				ifInfo.MinPeriod, _ = strconv.Atoi(splitted[0])
+				ifInfo.MaxPeriod, _ = strconv.Atoi(splitted[1])
 			}
 
 		}
@@ -84,46 +244,153 @@ func parseAlsaInfos(output string) (AlsaDeviceIfInfo, error) {
 	return ifInfo, nil
 }
 
-func getAlsaDeviceInfo(deviceId string) (AlsaDeviceInfo, error) {
-	// cat /proc/asound/card{N}/stream{M}
-	deviceInfo := AlsaDeviceInfo{
-		DeviceName: deviceId,
-	}
-
-	// command with timeout
-	// playbackRes, _ := exec.Command("aplay", "-D", deviceId, "--dump-hw-params", "/dev/zero").CombinedOutput()
-	playbackRes, _ := exec.Command("timeout", "0.5", "aplay", "-D", deviceId, "--dump-hw-params", "/dev/zero").CombinedOutput()
-	ifInfo, err := parseAlsaInfos(string(playbackRes))
-	if err != nil {
-		return deviceInfo, err
-	}
-	deviceInfo.Playback = ifInfo
-
-	captureRes, _ := exec.Command("timeout", "0.5", "arecord", "-D", deviceId, "--dump-hw-params", "/dev/null").CombinedOutput()
-	ifInfo, err = parseAlsaInfos(string(captureRes))
-	if err != nil {
-		return deviceInfo, err
-	}
-	deviceInfo.Capture = ifInfo
-
-	return deviceInfo, nil
-}
-
 func GetAlsaDevices(c *fiber.Ctx) error {
-	// aplay -l
-	subDeviceInfo := getAlsaDeviceSubDeviceCounts()
+	devices := make([]AlsaDeviceInfo, 0)
 
-	devices := make([]AlsaDeviceInfo, 0, len(subDeviceInfo))
-	for deviceName, subDeviceNum := range subDeviceInfo {
-		deviceId := "hw:" + deviceName + "," + strconv.Itoa(subDeviceNum)
-		log.Println(deviceId)
-		deviceInfo, err := getAlsaDeviceInfo(deviceId)
-		log.Println(deviceInfo)
+	db, err := openDb()
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer db.Close()
+
+	rows, err := db.Query(`
+		SELECT id, card_name, device_name, card_number, device_number
+		FROM devices
+	`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var device AlsaDeviceInfo
+		var deviceId, cardName, deviceName string
+		var cHwNumber, dHwNumber int
+
+		err := rows.Scan(&deviceId, &cardName, &deviceName, &cHwNumber, &dHwNumber)
 		if err != nil {
-			continue
+			return err
 		}
-		devices = append(devices, deviceInfo)
+
+		device.Id = deviceId
+		device.CardName = cardName
+		device.DeviceName = deviceName
+
+		playbackParams := db.QueryRow(`
+			SELECT min_rate, max_rate, max_channels
+			FROM device_p_params
+			WHERE device_id = ?
+		`, deviceId)
+
+		var minRate, maxRate, maxChannels int
+		err = playbackParams.Scan(&minRate, &maxRate, &maxChannels)
+		if err != nil {
+			log.Println(err)
+			// return err
+		} else {
+			device.Playback = &DevicePadInfo{
+				Rate:     maxRate,
+				Channels: maxChannels,
+			}
+		}
+
+		captureParams := db.QueryRow(`
+			SELECT min_rate, max_rate, max_channels
+			FROM device_c_params
+			WHERE device_id = ?
+		`, deviceId)
+
+		err = captureParams.Scan(&minRate, &maxRate, &maxChannels)
+		if err != nil {
+			log.Println(err)
+			// return err
+		} else {
+			device.Capture = &DevicePadInfo{
+				Rate:     maxRate,
+				Channels: maxChannels,
+			}
+		}
+
+		devices = append(devices, device)
+	}
+
+	if err = rows.Err(); err != nil {
+		return err
 	}
 
 	return c.JSON(devices)
+}
+
+func LoadAlsaDeviceToJack(c *fiber.Ctx) error {
+	// deviceName := c.Params("device_name")
+	var config AlsaLoadConfig
+
+	if err := c.BodyParser(&config); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"message": "Invalid request body"})
+	}
+
+	alsaDevice := AlsaDevice{}
+
+	db, err := openDb()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	err = db.QueryRow(`
+		SELECT id, card_name, device_name, card_number, device_number
+		FROM devices
+		WHERE id = ?
+	`, config.DeviceId).Scan(&alsaDevice.Id, &alsaDevice.CardName, &alsaDevice.DeviceName, &alsaDevice.CardNum, &alsaDevice.DeviceNum)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": "Failed to get ALSA device info"})
+	}
+
+	hwId := fmt.Sprintf("hw:%d,%d", alsaDevice.CardNum, alsaDevice.DeviceNum)
+
+	var deviceConnectionType AlsaDeviceConnectionType
+	if config.Client == "zalsa" {
+		deviceConnectionType = zAlsa
+	} else {
+		deviceConnectionType = alsa
+	}
+
+	if deviceConnectionType == zAlsa {
+		zalsaArg := fmt.Sprintf("-d %s -r %d -p %d -n %d", hwId, config.Rate, config.Period, config.NPeriods)
+
+		if err := exec.Command("jack_load", alsaDevice.Id+"_in", "zalsa_in", "-i", zalsaArg).Run(); err != nil {
+			log.Println(err)
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": "Failed to load ALSA device to JACK"})
+		}
+
+		if err := exec.Command("jack_load", alsaDevice.Id+"_out", "zalsa_out", "-i", zalsaArg).Run(); err != nil {
+			log.Println(err)
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": "Failed to load ALSA device to JACK"})
+		}
+	} else if deviceConnectionType == alsa {
+		if err := exec.Command("alsa_in", "-j", alsaDevice.Id+"_in", "-d", hwId, "-r", strconv.Itoa(config.Rate), "-p", strconv.Itoa(config.Period), "-n", strconv.Itoa(config.NPeriods)).Run(); err != nil {
+			log.Println(err)
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": "Failed to load ALSA device to JACK"})
+		}
+		if err := exec.Command("alsa_out", "-j", alsaDevice.Id+"_out", "-d", hwId, "-r", strconv.Itoa(config.Rate), "-p", strconv.Itoa(config.Period), "-n", strconv.Itoa(config.NPeriods)).Run(); err != nil {
+			log.Println(err)
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": "Failed to load ALSA device to JACK"})
+		}
+	}
+
+	return c.JSON(fiber.Map{"message": "ALSA device loaded to JACK"})
+}
+
+func UnloadAlsaDeviceFromJack(c *fiber.Ctx) error {
+	deviceId := c.Params("device_id")
+
+	if err := exec.Command("jack_unload", deviceId+"_in").Run(); err != nil {
+		log.Println(err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": "Failed to unload ALSA device from JACK"})
+	}
+	if err := exec.Command("jack_unload", deviceId+"_out").Run(); err != nil {
+		log.Println(err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": "Failed to unload ALSA device from JACK"})
+	}
+
+	return c.JSON(fiber.Map{"message": "ALSA device unloaded from JACK"})
 }

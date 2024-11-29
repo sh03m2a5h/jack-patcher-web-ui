@@ -11,7 +11,8 @@ import (
 type JackServerConfig struct {
 	Rate     int `json:"rate"`
 	Period   int `json:"period"`
-	NPeriods int `json:"nperiods"`
+	// dummyの場合はnperiodsを設定できない
+	// NPeriods int `json:"nperiods"`
 }
 
 func GetJackServerState(c *fiber.Ctx) error {
@@ -49,10 +50,6 @@ func StartJackServer(c *fiber.Ctx) error {
 	if err := exec.Command("jack_control", "dps", "period", strconv.Itoa(config.Period)).Run(); err != nil {
 		log.Println(err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": "Failed to set period"})
-	}
-	if err := exec.Command("jack_control", "dps", "nperiods", strconv.Itoa(config.NPeriods)).Run(); err != nil {
-		log.Println(err)
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": "Failed to set nperiods"})
 	}
 
 	return c.JSON(fiber.Map{"message": "JACK server started"})
