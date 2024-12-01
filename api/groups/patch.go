@@ -1,6 +1,8 @@
 package groups
 
 import (
+	"database/sql"
+	"log"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -145,6 +147,17 @@ func ConnectPorts(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": "Failed to connect ports"})
 	}
 
+	// ポート接続情報をデータベースに保存
+	db, err := openDb()
+	if err != nil {
+		log.Println(err)
+	}
+	_, err = db.Exec(`INSERT INTO port_connections (source_id, source_channel, destination_id, destination_channel) VALUES (?, ?, ?, ?)`,
+		patch.Source.Id, patch.Source.Channel, patch.Destination.Id, patch.Destination.Channel)
+	if err != nil {
+		log.Println(err)
+	}
+
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{"message": "Ports connected"})
 }
 
@@ -169,5 +182,62 @@ func DisconnectPorts(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": "Failed to disconnect ports"})
 	}
 
+	// ポート接続情報をデータベースから削除
+	db, err := openDb()
+	if err != nil {
+		log.Println(err)
+	}
+	_, err = db.Exec(`DELETE FROM port_connections WHERE source_id = ? AND source_channel = ? AND destination_id = ? AND destination_channel = ?`,
+		patch.Source.Id, patch.Source.Channel, patch.Destination.Id, patch.Destination.Channel)
+	if err != nil {
+		log.Println(err)
+	}
+
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{"message": "Ports disconnected"})
+}
+
+func initializePatchesTable(db *sql.DB) {
+	// port_connectionsテーブルを作成
+	createPortConnectionsTableSQL := `
+	CREATE TABLE IF NOT EXISTS port_connections (
+		source_id TEXT,
+		source_channel INT,
+		destination_id TEXT,
+		destination_channel INT,
+		PRIMARY KEY (source_id, source_channel, destination_id, destination_channel)
+	);
+	`
+
+	_, err := db.Exec(createPortConnectionsTableSQL)
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
+// ポート接続を復元する関数を追加
+func restorePortConnections(db *sql.DB) {
+	rows, err := db.Query(`SELECT source_id, source_channel, destination_id, destination_channel FROM port_connections`)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var sourceId, destinationId string
+		var sourceChannel, destinationChannel int
+		err := rows.Scan(&sourceId, &sourceChannel, &destinationId, &destinationChannel)
+		if err != nil {
+			log.Println(err)
+			continue
+		}
+		srcStr := sourceId + "_in:capture_" + strconv.Itoa(sourceChannel)
+		destStr := destinationId + "_out:playback_" + strconv.Itoa(destinationChannel)
+
+		err = exec.Command("jack_connect", srcStr, destStr).Run()
+		if err != nil {
+			log.Println(err)
+			continue
+		}
+	}
 }

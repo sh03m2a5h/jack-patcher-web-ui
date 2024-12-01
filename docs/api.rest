@@ -73,7 +73,7 @@ Content-Type: application/json
   "destination": {
     "io_type": "out",
     "id": "26fcc14bc2ca9f89",
-    "channel": 2
+    "channel": 1
   }
 }
 

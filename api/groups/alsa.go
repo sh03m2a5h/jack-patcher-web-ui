@@ -68,7 +68,23 @@ func openDb() (*sql.DB, error) {
 	return sql.Open("sqlite3", "./audio_devices.db")
 }
 
-func Initialize() {
+func InitializeDb() {
+	// SQLite3 データベースを開く
+	db, err := openDb()
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer db.Close()
+
+	// デバイス情報を保存するテーブルを初期化
+	initializeDevicesTable(db)
+
+	// 復帰用テーブルを初期化
+	initializeLoadDevicesTable(db)
+	initializePatchesTable(db)
+}
+
+func InitializeDevices() {
 	log.Println("Initializing alsa devices")
 	defer log.Println("Finished initializing alsa devices")
 
@@ -79,6 +95,17 @@ func Initialize() {
 	}
 	defer db.Close()
 
+	// デバイス情報を更新
+	updateDecicesTable(db)
+
+	// 保存されたデバイスをロード
+	loadSavedDevices(db)
+
+	// 保存されたパッチをロード
+	restorePortConnections(db)
+}
+
+func initializeDevicesTable(db *sql.DB) {
 	// テーブルが存在しない場合は作成
 	createTableSQL := `
 	CREATE TABLE IF NOT EXISTS devices (
@@ -114,11 +141,13 @@ func Initialize() {
 		FOREIGN KEY (device_id) REFERENCES devices(id)
 	);
 	`
-	_, err = db.Exec(createTableSQL)
+	_, err := db.Exec(createTableSQL)
 	if err != nil {
 		log.Fatal(err)
 	}
+}
 
+func updateDecicesTable(db *sql.DB) {
 	// aplay -l コマンドでデバイス一覧を取得
 	cmd := exec.Command("aplay", "-l")
 	output, err := cmd.Output()
@@ -186,6 +215,48 @@ func Initialize() {
 			alsaDevice.Id, 16, 32, captureParams.MinRate, captureParams.MaxRate, captureParams.MaxChannels, captureParams.MinPeriod, captureParams.MaxPeriod)
 		if err != nil {
 			log.Fatal(err)
+		}
+	}
+
+}
+
+func initializeLoadDevicesTable(db *sql.DB) {
+	createLoadedDevicesTableSQL := `
+	CREATE TABLE IF NOT EXISTS loaded_devices (
+		device_id TEXT PRIMARY KEY,
+		client_type TEXT,
+		rate INT,
+		period INT,
+		nperiods INT,
+		FOREIGN KEY (device_id) REFERENCES devices(id)
+	);
+	`
+	_, err := db.Exec(createLoadedDevicesTableSQL)
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
+func loadSavedDevices(db *sql.DB) {
+	rows, err := db.Query(`SELECT device_id, client_type, rate, period, nperiods FROM loaded_devices`)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var config AlsaLoadConfig
+		err := rows.Scan(&config.DeviceId, &config.Client, &config.Rate, &config.Period, &config.NPeriods)
+		if err != nil {
+			log.Println(err)
+			continue
+		}
+		// デバイスを再ロード
+		err = loadAlsaDevice(config)
+		if err != nil {
+			log.Println(err)
+			continue
 		}
 	}
 }
@@ -314,7 +385,8 @@ func GetAlsaDevices(c *fiber.Ctx) error {
 		devices = append(devices, device)
 	}
 
-	if err = rows.Err(); err != nil {
+	err = rows.Err()
+	if err != nil {
 		return err
 	}
 
@@ -325,7 +397,8 @@ func LoadAlsaDeviceToJack(c *fiber.Ctx) error {
 	// deviceName := c.Params("device_name")
 	var config AlsaLoadConfig
 
-	if err := c.BodyParser(&config); err != nil {
+	err := c.BodyParser(&config)
+	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"message": "Invalid request body"})
 	}
 
@@ -345,6 +418,40 @@ func LoadAlsaDeviceToJack(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": "Failed to get ALSA device info"})
 	}
 
+	// デバイスをロードする処理
+	err = loadAlsaDevice(config)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": "Failed to load ALSA device to JACK"})
+	}
+
+	// デバイス情報をデータベースに保存
+	_, err = db.Exec(`INSERT INTO loaded_devices (device_id, client_type, rate, period, nperiods) VALUES (?, ?, ?, ?, ?)`,
+		config.DeviceId, config.Client, config.Rate, config.Period, config.NPeriods)
+	if err != nil {
+		log.Println(err)
+	}
+
+	return c.JSON(fiber.Map{"message": "ALSA device loaded to JACK"})
+}
+
+// デバイスをロードする関数を追加
+func loadAlsaDevice(config AlsaLoadConfig) error {
+	alsaDevice := AlsaDevice{}
+
+	db, err := openDb()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	err = db.QueryRow(`
+		SELECT id, card_name, device_name, card_number, device_number
+		FROM devices
+		WHERE id = ?
+	`, config.DeviceId).Scan(&alsaDevice.Id, &alsaDevice.CardName, &alsaDevice.DeviceName, &alsaDevice.CardNum, &alsaDevice.DeviceNum)
+	if err != nil {
+		return err
+	}
+
 	hwId := fmt.Sprintf("hw:%d,%d", alsaDevice.CardNum, alsaDevice.DeviceNum)
 
 	var deviceConnectionType AlsaDeviceConnectionType
@@ -359,37 +466,49 @@ func LoadAlsaDeviceToJack(c *fiber.Ctx) error {
 
 		if err := exec.Command("jack_load", alsaDevice.Id+"_in", "zalsa_in", "-i", zalsaArg).Run(); err != nil {
 			log.Println(err)
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": "Failed to load ALSA device to JACK"})
+			return err
 		}
 
 		if err := exec.Command("jack_load", alsaDevice.Id+"_out", "zalsa_out", "-i", zalsaArg).Run(); err != nil {
 			log.Println(err)
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": "Failed to load ALSA device to JACK"})
+			return err
 		}
 	} else if deviceConnectionType == alsa {
 		if err := exec.Command("alsa_in", "-j", alsaDevice.Id+"_in", "-d", hwId, "-r", strconv.Itoa(config.Rate), "-p", strconv.Itoa(config.Period), "-n", strconv.Itoa(config.NPeriods)).Run(); err != nil {
 			log.Println(err)
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": "Failed to load ALSA device to JACK"})
+			return err
 		}
 		if err := exec.Command("alsa_out", "-j", alsaDevice.Id+"_out", "-d", hwId, "-r", strconv.Itoa(config.Rate), "-p", strconv.Itoa(config.Period), "-n", strconv.Itoa(config.NPeriods)).Run(); err != nil {
 			log.Println(err)
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": "Failed to load ALSA device to JACK"})
+			return err
 		}
 	}
 
-	return c.JSON(fiber.Map{"message": "ALSA device loaded to JACK"})
+	return nil
 }
 
 func UnloadAlsaDeviceFromJack(c *fiber.Ctx) error {
 	deviceId := c.Params("device_id")
 
-	if err := exec.Command("jack_unload", deviceId+"_in").Run(); err != nil {
+	err := exec.Command("jack_unload", deviceId+"_in").Run()
+	if err != nil {
 		log.Println(err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": "Failed to unload ALSA device from JACK"})
 	}
-	if err := exec.Command("jack_unload", deviceId+"_out").Run(); err != nil {
+	err = exec.Command("jack_unload", deviceId+"_out").Run()
+	if err != nil {
 		log.Println(err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": "Failed to unload ALSA device from JACK"})
+	}
+
+	// データベースからデバイス情報を削除
+	db, err := openDb()
+	if err != nil {
+		log.Println(err)
+	}
+	_, err = db.Exec(`DELETE FROM loaded_devices WHERE device_id = ?`, deviceId)
+	if err != nil {
+		log.Println(err)
 	}
 
 	return c.JSON(fiber.Map{"message": "ALSA device unloaded from JACK"})
