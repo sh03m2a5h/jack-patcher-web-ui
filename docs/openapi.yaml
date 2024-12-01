@@ -4,10 +4,9 @@ info:
   description: JACK Audio Connection Kit Web API
   version: 1.0.0
 servers:
-  - url: https://api.example.com/v1/jack
-    description: Production server
+  - url: https://api.example.com/v1
 paths:
-  /control/server:
+  /api/jack/control/server:
     get:
       summary: Get JACK server status
       responses:
@@ -66,7 +65,7 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-  /alsa/devices:
+  /api/alsa/devices:
     get:
       summary: Get ALSA devices
       responses:
@@ -116,71 +115,23 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-  /device/alsa/{device_name}:
+  /api/alsa/load:
     post:
-      summary: Load ALSA device with configuration
-      parameters:
-        - name: device_name
-          in: path
-          required: true
-          description: ALSA device name
-          schema:
-            type: string
-          example: hw:0
+      summary: Load ALSA device to JACK
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                client:
-                  type: string
-                  example: alsa | zalsa
-                properties:
-                  type: object
-                  properties:
-                    rate:
-                      type: integer
-                      example: 96000
-                    capture_channels:
-                      type: integer
-                      example: 2
-                    playback_channels:
-                      type: integer
-                      example: 2
-                    format:
-                      type: string
-                      enum: [s16_le, s24_3le, s32_le]
-                    period:
-                      type: integer
-                      example: 128
-                    nperiods:
-                      type: integer
-                      example: 4
-      responses:
-        "200":
-          description: ALSA device configuration loaded
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Success"
-        "400":
-          description: ALSA device already loaded
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
+              $ref: "#/components/schemas/AlsaLoadConfig"
     delete:
-      summary: Unload ALSA device configuration
+      summary: Unload ALSA device from JACK
       parameters:
-        - name: device_name
-          in: path
+        - name: device_id
+          in: query
           required: true
-          description: ALSA device name
           schema:
             type: string
-          example: hw:0
       responses:
         "200":
           description: ALSA device configuration unloaded
@@ -194,7 +145,7 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-  /ports:
+  /api/jack/ports:
     get:
       summary: Get JACK server ports
       responses:
@@ -216,7 +167,7 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-  /patches:
+  /api/jack/patches:
     get:
       summary: Get connected JACK server ports
       responses:
@@ -238,27 +189,6 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
     post:
-      summary: Disconnect JACK server ports
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/JackPatch"
-      responses:
-        "200":
-          description: Ports disconnected
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Success"
-        "400":
-          description: Ports already disconnected
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-    delete:
       summary: Connect JACK server ports
       requestBody:
         required: true
@@ -279,23 +209,64 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+    delete:
+      summary: Disconnect JACK server ports
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/JackPatch"
+      responses:
+        "200":
+          description: Ports disconnected
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Success"
+        "400":
+          description: Ports already disconnected
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 components:
   schemas:
     JackServerConfig:
       type: object
       properties:
-        device:
-          type: string
-          example: hw:0
         rate:
           type: integer
-          example: 96000
+          example: 48000
         period:
           type: integer
           example: 128
+      required:
+        - rate
+        - period
+
+    AlsaLoadConfig:
+      type: object
+      properties:
+        deviceId:
+          type: string
+        client:
+          type: string
+          enum:
+            - zalsa
+            - alsa
+        rate:
+          type: integer
+        period:
+          type: integer
         nperiods:
           type: integer
-          example: 4
+      required:
+        - deviceId
+        - client
+        - rate
+        - period
+        - nperiods
     JackPatch:
       type: object
       properties:

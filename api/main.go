@@ -16,13 +16,15 @@ func main() {
 
 	app.Get("/", func(c *fiber.Ctx) error {
 		return c.SendString("Hello, World!")
-		// devices, _ := groups.GetAlsaDeviceInfo("hw:0,0")
-		// return c.JSON(devices)
 	})
-	jackGroup := app.Group("/api/jack/control")
-	jackGroup.Get("/server", groups.GetJackServerState)
-	jackGroup.Post("/server", groups.StartJackServer)
-	jackGroup.Delete("/server", groups.StopJackServer)
+	jackGroup := app.Group("/api/jack")
+	jackGroup.Get("/control/server", groups.GetJackServerState)
+	jackGroup.Post("/control/server", groups.StartJackServer)
+	jackGroup.Delete("/control/server", groups.StopJackServer)
+	jackGroup.Get("/ports", groups.GetPorts)
+	jackGroup.Get("/patches", groups.GetPatches)
+	jackGroup.Post("/patches", groups.ConnectPorts)
+	jackGroup.Delete("/patches", groups.DisconnectPorts)
 
 	alsaGroup := app.Group("/api/alsa")
 	alsaGroup.Get("/devices", groups.GetAlsaDevices)

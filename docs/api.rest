@@ -37,3 +37,60 @@ Content-Type: application/json
 
 DELETE {{endpoint}}/alsa/load/26fcc14bc2ca9f89
 
+
+###
+
+POST {{endpoint}}/alsa/load
+Content-Type: application/json
+
+{
+    "deviceId": "f63efa817e772803",
+    "client": "zalsa",
+    "rate": 48000,
+    "period": 128,
+    "nperiods": 2
+}
+
+###
+
+GET {{endpoint}}/jack/ports
+
+###
+
+GET {{endpoint}}/jack/patches
+
+###
+
+POST {{endpoint}}/jack/patches
+Content-Type: application/json
+
+{
+  "source": {
+    "io_type": "in",
+    "id": "f63efa817e772803",
+    "channel": 1
+  },
+  "destination": {
+    "io_type": "out",
+    "id": "26fcc14bc2ca9f89",
+    "channel": 2
+  }
+}
+
+###
+
+DELETE {{endpoint}}/jack/patches
+Content-Type: application/json
+
+{
+  "source": {
+    "io_type": "in",
+    "id": "f63efa817e772803",
+    "channel": 1
+  },
+  "destination": {
+    "io_type": "out",
+    "id": "26fcc14bc2ca9f89",
+    "channel": 1
+  }
+}
