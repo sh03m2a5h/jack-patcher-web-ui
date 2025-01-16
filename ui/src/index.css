@@ -1,0 +1,28 @@
+:root {
+  font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+}
+
+html,
+body,
+#root {
+  /* height: 100%; */
+  margin: 0px auto;
+}
+
+.react-flow-container {
+  margin: 0px auto;
+  height: 800px;
+  width: 100%;
+  max-width: 1200px;
+
+  padding: 5px;
+  border: 1px solid #a1a1a1;
+  border-radius: 16px;
+}
+
+.flow-node {
+  width: unset;
+  padding: 5px 10px;
+}

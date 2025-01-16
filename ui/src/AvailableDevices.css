@@ -1,0 +1,26 @@
+
+.available-devices {
+    padding: 0px;
+    border: 1px solid #e0e0e0;
+    border-radius: 5px;
+    margin: 10px;
+}
+
+ul {
+    padding: 0px;
+    margin: 0px;
+}
+
+li.device {
+    list-style: none;
+    align-items: center;
+    padding: 10px 20px;
+    border-bottom: 1px solid #e0e0e0;
+    &:last-child {
+        border-bottom: none;
+    }
+}
+
+li.device-connected {
+    background-color: #e0f7fa;
+}

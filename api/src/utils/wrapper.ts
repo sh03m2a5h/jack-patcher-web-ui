@@ -2,36 +2,12 @@
 
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { AlsaDevice, AlsaDeviceParams, JackConnection, JackConnectionState, JackStatus, NumRange } from '../models';
 
 const execAsync = promisify(exec);
 const snake2camel = (str: string) => str.toLowerCase().replace(/_./g, (s) => s.charAt(1).toUpperCase());
 
-// 型定義
-export interface JackStatus {
-  status: string;
-}
-
-export interface Range {
-  min: number;
-  max: number;
-}
-
-export interface AlsaDeviceParams {
-  rate: number | Range;
-  periods: number | Range;
-  [key: string]: string | number | Range;
-}
-
-export interface AlsaDevice {
-  card: string;
-  cardName: string;
-  device: string;
-  description: string;
-  playbackParams?: AlsaDeviceParams[];
-  captureParams?: AlsaDeviceParams[];
-}
-
-function parseParamData(paramData: string): string | number | Range {
+function parseParamData(paramData: string): string | number | NumRange {
   if (/^\d+$/.test(paramData)) {
     return parseInt(paramData, 10);
   } else if (/^\d+-\d+$/.test(paramData)) {
@@ -109,27 +85,33 @@ async function getAlsaDevices(/*mode: 'playback' | 'capture'*/): Promise<AlsaDev
         const cardNum = parseInt(match[1], 10);
         const deviceNum = parseInt(match[4], 10);
 
-        const { stderr: pOut } = await execAsync(`aplay --dump-hw-params -D hw:${cardNum},${deviceNum} /dev/zero`).catch((e) => e);
-        const { stderr: cOut } = await execAsync(`arecord --dump-hw-params -D hw:${cardNum},${deviceNum} /dev/null`).catch((e) => e);
+        const { stderr: pOut } = await execAsync(`timeout 1 aplay --dump-hw-params -D hw:${cardNum},${deviceNum} /dev/zero`).catch((e) => e);
+        const { stderr: cOut } = await execAsync(`timeout 1 arecord --dump-hw-params -D hw:${cardNum},${deviceNum} /dev/null`).catch((e) => e);
         const pParams = String(pOut).match(/-{20}(.*)-{20}/s)?.[1];
         const cParams = String(cOut).match(/-{20}(.*)-{20}/s)?.[1];
 
-        const playbackParams: AlsaDeviceParams = { rate: 48000, periods: 1 };
-        const captureParams: AlsaDeviceParams = { rate: 48000, periods: 1 };
+        let playbackParams: AlsaDeviceParams | null = null;
+        let captureParams: AlsaDeviceParams | null = null;
 
         if (pParams) {
           const playbackMatch = pParams.match(/(.*):(\s+?)(.*)/gm);
-          playbackMatch?.forEach((param) => {
-            const [key, value] = param.split(':');
-            playbackParams[snake2camel(key)] = parseParamData(value.trim());
-          });
+          if (playbackMatch) {
+            playbackParams = { rate: 48000, periods: 1 };
+            for (const param of playbackMatch) {
+              const [key, value] = param.split(':');
+              playbackParams[snake2camel(key)] = parseParamData(value.trim());
+            }
+          }
         }
         if (cParams) {
           const captureMatch = cParams.match(/(.*):(\s+?)(.*)/gm);
-          captureMatch?.forEach((param) => {
-            const [key, value] = param.split(':');
-            captureParams[snake2camel(key)] = parseParamData(value.trim());
-          });
+          if (captureMatch) {
+            captureParams = { rate: 48000, periods: 1 };
+            for (const param of captureMatch) {
+              const [key, value] = param.split(':');
+              captureParams[snake2camel(key)] = parseParamData(value.trim());
+            }
+          }
         }
 
 
@@ -138,8 +120,8 @@ async function getAlsaDevices(/*mode: 'playback' | 'capture'*/): Promise<AlsaDev
           cardName: match[2],
           device: match[4],
           description: match[6],
-          playbackParams: playbackParams ? [playbackParams] : undefined,
-          captureParams: captureParams ? [captureParams] : undefined,
+          playbackParams: playbackParams ? playbackParams : undefined,
+          captureParams: captureParams ? captureParams : undefined,
         });
       }
     }
@@ -150,20 +132,52 @@ async function getAlsaDevices(/*mode: 'playback' | 'capture'*/): Promise<AlsaDev
 }
 
 /**
+ * ALSAデバイスの接続状況を取得する
+ * @returns {Promise<JackConnectionState | null>} 接続状況のオブジェクト
+ */
+async function getJackConnection(): Promise<JackConnectionState | null> {
+  try {
+    const { stdout } = await execAsync(`jack_lsp -c | grep alsa_`).catch((e) => e);
+    if (!stdout) {
+      return null;
+    }
+    const lines = stdout.trim().split('\n');
+    const alsaDevices: string[] = [];
+    const connections: JackConnection[] = [];
+    let currentDevice = '';
+    for (const line of lines) {
+      const match = line.match(/^alsa_(\S+)_(src|sink):(.+)$/);
+      if (match) {
+        currentDevice = match[1];
+        if (!alsaDevices.includes(currentDevice))
+          alsaDevices.push(currentDevice);
+      } else {
+        const dest = line.trim();
+        connections.push({ src: currentDevice, dest });
+      }
+    }
+    return { alsaDevices, connections };
+  } catch (error) {
+    throw new Error(`ALSAデバイスの接続状況の取得に失敗しました: ${(error as Error).message}`);
+  }
+}
+
+/**
  * ALSAデバイスをJACKに接続する
  * @param options 接続設定
  */
-async function connectAlsaToJack(options: {
-  deviceName: string;
-  samplingRate: number;
-  periods: number;
-  nperiods: number;
-}): Promise<void> {
-  const { deviceName, samplingRate = 96000, periods = 128, nperiods = 4 } = options;
-  const deviceId = `hw:${deviceName},${deviceName}`;
+async function connectAlsaToJack(device: AlsaDevice, periods: number = 128, nperiods: number = 2): Promise<void> {
+  const deviceId = `hw:${device.card}`;
+  const cardName = `alsa_${device.cardName}`;
+  const samplingRate = device.playbackParams?.rate || 48000;
   try {
-    await execAsync(`jack_load ${deviceName}_src alsa_in -i "-d ${deviceName} -r ${samplingRate} -p ${periods} -n ${nperiods}"`);
-    await execAsync(`jack_load ${deviceName}_sink alsa_out -i "-d ${deviceName} -r ${samplingRate} -p ${periods} -n ${nperiods}"`);
+    if (device.captureParams) {
+      execAsync(`alsa_in -j ${cardName}_src -d ${deviceId} -r ${samplingRate} -p ${periods} -n ${nperiods} > /dev/null`);
+    }
+    if (device.playbackParams) {
+      execAsync(`alsa_out -j ${cardName}_sink -d ${deviceId} -r ${samplingRate} -p ${periods} -n ${nperiods} > /dev/null`);
+    }
+    // await execAsync(`jack_load ${cardName} audioadapter -i "-d ${deviceId} -r ${samplingRate} -p ${periods} -n ${nperiods}"`);
   } catch (error) {
     throw new Error(`ALSAデバイスのJACK接続に失敗しました: ${(error as Error).message}`);
   }
@@ -213,6 +227,7 @@ export {
   startJackServer,
   stopJackServer,
   getAlsaDevices,
+  getJackConnection,
   connectAlsaToJack,
   disconnectAlsaFromJack,
   connectJackPorts,
